@@ -108,6 +108,31 @@ for loan in client.get_loans():
 
 ## REST API i Docker
 
+### Automatyczne wdrożenia
+
+Push do **`master`** uruchamia `.github/workflows/deploy.yml`: testy,
+budowę obrazu z `uv.lock`, test kontenera, publikację w GHCR i aktualizację
+digestu w `wjarka/homelab:main` (`stacks/sowa-mobi/compose.yaml`). Istniejący
+webhook homelab uruchamia wdrożenie przez Komodo. Job `deploy` czeka do
+10 minut, aż `/healthz` zwróci `status: ok` i `revision` równą wdrażanemu
+commitowi. Samo opublikowanie obrazu nie oznacza udanego wdrożenia.
+
+Sekret Actions `HOMELAB_DEPLOY_KEY` zawiera dedykowany klucz SSH z prawem
+zapisu tylko do repozytorium `wjarka/homelab` (deploy key `sowa-mobi-deploy`).
+Publikacja obrazu używa wbudowanego `GITHUB_TOKEN`. PR-y uruchamiają testy
+i sprawdzają kontener, bez publikacji ani dostępu do klucza wdrożeniowego.
+
+Wdrożenia są szeregowane; run starszego commita nie może zastąpić nowszej
+wersji. Rollback: cofnij commit `deploy: sowa-mobi ...` w homelab i wypchnij
+zmianę. Zachowaj poprzednie obrazy w GHCR. Po błędzie przejściowym ponów
+nieudany job; jeśli Komodo nie odebrał webhooka, ponów dostarczenie webhooka
+push w homelab albo uruchom `deploy-on-push` w Komodo.
+
+Lokalna budowa bez `--build-arg SOWA_REVISION=<commit>` zgłasza
+`revision: unknown`.
+
+### Konfiguracja lokalna
+
 API używa osobnego Bearer tokenu dla każdego konta. Token identyfikuje konto,
 więc agent nie otrzymuje loginu ani hasła do SOWA i nie może wybrać innego
 konta przez parametr URL.

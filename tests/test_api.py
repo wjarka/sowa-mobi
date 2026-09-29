@@ -107,6 +107,12 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.json()["status"], "ok")
         self.assertIsInstance(response.json()["hint"], list)
 
+    @patch.dict("os.environ", {"SOWA_REVISION": "abc123"})
+    def test_health_identifies_the_running_release_without_logging_in(self):
+        response = self.client.get("/healthz")
+        self.assertEqual(response.json()["revision"], "abc123")
+        self.assertEqual(self.clients, {})
+
     def test_missing_or_invalid_token_is_rejected(self):
         response = self.client.get("/v1/loans")
         self.assertEqual(response.status_code, 401)
