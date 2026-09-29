@@ -148,4 +148,5 @@ jobs:
         if: steps.promote.outputs.deployed == 'true'
         env:
           REVISION: ${{ github.sha }}
-        run: uv run --no-project python scripts/verify_deployment.py https://sowa-mobi.home.jarka.pl/healthz "$REVISION"
+          DIGEST: ${{ needs.image.outputs.digest }}
+        run: uv run --no-project python scripts/verify_deployment.py homelab "$REVISION" "$DIGEST"

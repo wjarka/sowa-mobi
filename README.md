@@ -113,9 +113,13 @@ for loan in client.get_loans():
 Push do **`master`** uruchamia `.github/workflows/deploy.yml`: testy,
 budowę obrazu z `uv.lock`, test kontenera, publikację w GHCR i aktualizację
 digestu w `example/deployment-config:main` (`stacks/sowa-mobi/compose.yaml`). Istniejący
-webhook homelab uruchamia wdrożenie przez Komodo. Job `deploy` czeka do
-10 minut, aż `/healthz` zwróci `status: ok` i `revision` równą wdrażanemu
-commitowi. Samo opublikowanie obrazu nie oznacza udanego wdrożenia.
+webhook homelab uruchamia wdrożenie przez Komodo. Hook `post-deploy.sh`
+w homelab sprawdza zdrowie kontenera, digest obrazu i `/healthz`, po czym
+zapisuje potwierdzenie w gałęzi `deployment-status/sowa-mobi` repo homelab.
+Job `deploy` czeka do 10 minut na potwierdzenie zgodne z wdrażanym commitem
+i digestem. GitHub nie potrzebuje dostępu do prywatnej sieci; aplikacja
+nie jest wystawiana publicznie. Samo opublikowanie obrazu nie oznacza
+udanego wdrożenia.
 
 Sekret Actions `HOMELAB_DEPLOY_KEY` zawiera dedykowany klucz SSH z prawem
 zapisu tylko do repozytorium `example/deployment-config` (deploy key `sowa-mobi-deploy`).
