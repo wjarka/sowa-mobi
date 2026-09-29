@@ -69,6 +69,7 @@ class Reservation:
     reservation_id: str = ""
     ready: bool = False
     pickup_by: str = ""
+    state: str = "preparing"
     _cancel_url: str = ""
     _cancel_data: dict = field(default_factory=dict)
 
@@ -358,6 +359,7 @@ class SowaOPAC:
                 pickup = re.search(r"termin\s+odbioru\s+do\s+(\d{2}\.\d{2}\.\d{4})", status_text, re.I)
                 res.pickup_by = pickup.group(1) if pickup else ""
                 res.expire_date = res.pickup_by
+                res.state = "ready" if res.ready else "queued" if res.queue_pos else "preparing"
             res.reservation_id = str(record.get("data-recid") or "")
             form = record.find("form")
             if form:
