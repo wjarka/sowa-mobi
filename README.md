@@ -108,32 +108,49 @@ for loan in client.get_loans():
 
 ## REST API i Docker
 
-### Automatyczne wdrożenia
+### Optional deployment
 
-Push do **`master`** uruchamia `.github/workflows/deploy.yml`: testy,
-budowę obrazu z `uv.lock`, test kontenera, publikację w GHCR i aktualizację
-digestu w `wjarka/homelab:main` (`stacks/sowa-mobi/compose.yaml`). Istniejący
-webhook homelab uruchamia wdrożenie przez Komodo. Hook `post-deploy.sh`
-w homelab sprawdza zdrowie kontenera, digest obrazu i `/healthz`, po czym
-zapisuje potwierdzenie w gałęzi `deployment-status/sowa-mobi` repo homelab.
-Job `deploy` czeka do 10 minut na potwierdzenie zgodne z wdrażanym commitem
-i digestem. GitHub nie potrzebuje dostępu do prywatnej sieci; aplikacja
-nie jest wystawiana publicznie. Samo opublikowanie obrazu nie oznacza
-udanego wdrożenia.
+CI tests and builds the app without any deployment configuration. Deployment
+is **disabled by default**, including in forks. Image publication uses
+`ghcr.io/<repository-owner>/<repository-name>`; PRs never publish or deploy.
+Only a successful default-branch release can deploy, and only when the
+repository variable `DEPLOY_ENABLED` is exactly `true`.
 
-Sekret Actions `HOMELAB_DEPLOY_KEY` zawiera dedykowany klucz SSH z prawem
-zapisu tylko do repozytorium `wjarka/homelab` (deploy key `sowa-mobi-deploy`).
-Publikacja obrazu używa wbudowanego `GITHUB_TOKEN`. PR-y uruchamiają testy
-i sprawdzają kontener, bez publikacji ani dostępu do klucza wdrożeniowego.
+Configure these under GitHub **Settings → Secrets and variables → Actions**:
 
-Wdrożenia są szeregowane; run starszego commita nie może zastąpić nowszej
-wersji. Rollback: cofnij commit `deploy: sowa-mobi ...` w homelab i wypchnij
-zmianę. Zachowaj poprzednie obrazy w GHCR. Po błędzie przejściowym ponów
-nieudany job; jeśli Komodo nie odebrał webhooka, ponów dostarczenie webhooka
-push w homelab albo uruchom `deploy-on-push` w Komodo.
+| Setting | Kind | Value / default |
+|---|---|---|
+| `DEPLOY_ENABLED` | Variable | `true` to opt in; otherwise skipped |
+| `DEPLOY_REPOSITORY` | Secret | Target GitOps repository, `owner/repository` |
+| `DEPLOY_KEY` | Secret | SSH deploy key with write access to that repository |
+| `DEPLOY_BRANCH` | Variable | Target branch; default `main` |
+| `DEPLOY_COMPOSE_PATH` | Variable | Relative path; default `stacks/sowa-mobi/compose.yaml` |
+| `DEPLOY_RECEIPT_BRANCH` | Variable | Health receipt branch; default `deployment-status/sowa-mobi` |
 
-Lokalna budowa bez `--build-arg SOWA_REVISION=<commit>` zgłasza
-`revision: unknown`.
+Existing installations can keep `HOMELAB_DEPLOY_KEY` instead of `DEPLOY_KEY`.
+`DEPLOY_REPOSITORY` is a secret so its value is masked in Actions logs; the
+workflow and variable names remain public. Deploy keys grant write access
+to the entire target repository. No deployment secrets are needed for CI.
+Set `DEPLOY_ENABLED=false` to disable deployment without disabling tests or
+image publication. Enabling deployment with missing secrets fails clearly.
+
+The target Compose file must contain the app's service names and an image
+from this source repository: `sowa-mobi`.
+The updater changes only their digest pins and source comments; runtime
+settings are preserved. The GitOps controller must deploy changes on the
+configured branch, then write `status.json` to the configured receipt branch:
+
+```json
+{"status":"healthy","revision":"<full source commit>","image":"ghcr.io/owner/sowa-mobi@sha256:<digest>","verified_at":"<UTC timestamp>"}
+```
+
+CI waits up to ten minutes for the exact image digest and revision. The
+controller should verify the running containers before publishing a receipt.
+The receipt branch must not trigger another deployment. Releases are
+serialized, outdated source commits skip promotion, and concurrent target
+commits are retried without force-pushing. Rollback by reverting the image
+update in the target repository; retain old images and check database
+compatibility where applicable.
 
 ### Konfiguracja lokalna
 

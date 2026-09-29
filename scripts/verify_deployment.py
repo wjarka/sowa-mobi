@@ -1,19 +1,22 @@
 """Wait for Komodo's health receipt without inbound access to the homelab."""
 
 import json
+import os
 import subprocess
 import sys
 import time
 
 
 def read_receipt(checkout: str) -> dict:
+    branch = os.environ.get("DEPLOY_RECEIPT_BRANCH", "deployment-status/sowa-mobi")
+    subprocess.run(["git", "check-ref-format", "--branch", branch], check=True, capture_output=True)
     subprocess.run(
         ["git", "-C", checkout, "fetch", "--quiet", "origin",
-         "+refs/heads/deployment-status/sowa-mobi:refs/remotes/origin/deployment-status/sowa-mobi"],
+         f"+refs/heads/{branch}:refs/deployment-receipt"],
         check=True, capture_output=True, timeout=30,
     )
     result = subprocess.run(
-        ["git", "-C", checkout, "show", "refs/remotes/origin/deployment-status/sowa-mobi:status.json"],
+        ["git", "-C", checkout, "show", "refs/deployment-receipt:status.json"],
         check=True, capture_output=True, text=True, timeout=10,
     )
     return json.loads(result.stdout)
@@ -21,7 +24,8 @@ def read_receipt(checkout: str) -> dict:
 
 def main() -> None:
     checkout, revision, digest = sys.argv[1:]
-    expected_image = f"ghcr.io/wjarka/sowa-mobi@{digest}"
+    image = os.environ.get("IMAGE_REPOSITORY", "ghcr.io/wjarka/sowa-mobi")
+    expected_image = f"{image}@{digest}"
     deadline = time.monotonic() + 600
     last_observation = "No deployment receipt"
     while time.monotonic() < deadline:
