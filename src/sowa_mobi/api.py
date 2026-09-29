@@ -131,8 +131,11 @@ def create_app(config: dict[str, Any], client_factory: ClientFactory | None = No
         }
 
     @app.get("/healthz", response_model=HintedResponse, summary="Check API health", tags=["system"])
-    def healthz() -> dict[str, str]:
-        return with_hint({"status": "ok"}, "Use the documented endpoints to access library data.")
+    def healthz() -> dict[str, Any]:
+        return with_hint(
+            {"status": "ok", "revision": os.environ.get("SOWA_REVISION", "unknown")},
+            "Use the documented endpoints to access library data.",
+        )
 
     @app.get("/v1/account", response_model=HintedResponse, summary="Get the authenticated account", tags=["account"])
     def account(account_name: str = Depends(authenticated_account)) -> dict[str, Any]:
