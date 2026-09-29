@@ -1,0 +1,10 @@
+services:
+  sowa-api:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      SOWA_CONFIG: /config/sowa.json
+    volumes:
+      - ./config/sowa.json:/config/sowa.json:ro

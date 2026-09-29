@@ -4,23 +4,22 @@ SOWA OPAC Client — zarządzanie kontem bibliotecznym przez web OPAC.
 Działa z każdą biblioteką używającą systemu SOWA (Sokrates-software).
 
 Author: Hermes Agent dla Wiktora
-Repository: /home/wjarka/uploads/
+Repository: this project
 
 Usage:
     from sowa_opac import SowaOPAC, MultiAccountManager
 
-    # Pojedyncze konto
-    client = SowaOPAC("https://www.kornik-bp.sowa.pl", kat_id=519)
-    client.login("wiktor@jarka.pl", "password")
+    # Single account
+    client = SowaOPAC("https://library.example.org", kat_id=0)
+    client.login("reader@example.org", "password")
     for loan in client.get_loans():
         print(f"{loan.title} — do {loan.due_date}")
     client.prolong(loan)
 
     # Wiele kont
-    mgr = MultiAccountManager("https://www.kornik-bp.sowa.pl", 519)
-    mgr.add_account("ja", "wiktor@jarka.pl", "pass")
-    mgr.add_account("żona", "zonka@jarka.pl", "pass")
-    mgr.add_account("dziecko", "dziecko@jarka.pl", "pass")
+    mgr = MultiAccountManager("https://library.example.org", 0)
+    mgr.add_account("account_a", "reader@example.org", "password")
+    mgr.add_account("account_b", "other@example.org", "password")
     print(mgr.summary())
 """
 
@@ -67,6 +66,8 @@ class Reservation:
     status: str = ""
     queue_pos: str = ""
     expire_date: str = ""
+    reservation_id: str = ""
+    _cancel_url: str = ""
     _cancel_data: dict = field(default_factory=dict)
 
 
@@ -97,9 +98,9 @@ class SowaOPAC:
     def __init__(self, base_url: str, kat_id: int):
         """
         Args:
-            base_url: URL katalogu, np. "https://www.kornik-bp.sowa.pl"
+            base_url: URL katalogu SOWA, np. "https://library.example.org"
             kat_id: ID katalogu (KatID w URLach). Znajdziesz w URL na stronie biblioteki.
-                    Dla Kórnika: 519
+                    Wartość zależy od konfiguracji biblioteki.
         """
         self.base_url = base_url.rstrip("/")
         self.kat_id = kat_id
@@ -143,14 +144,22 @@ class SowaOPAC:
         
         Returns: True jeśli zalogowano pomyślnie
         """
-        login_page = f"index.php?KatID={self.kat_id}&typ=acc"
+        # SOWA currently serves the login form under the explicit login route.
+        # The older KatID+typ=acc URL is redirected to a malformed query
+        # (e.g. index.php?0&acc) and therefore contains no CSRF form token.
+        login_page = "index.php?typ=acc&id=login"
         r = self._get(login_page)
         csrf = self._get_csrf_token(r.text)
         if not csrf:
             raise RuntimeError("Nie udało się pobrać tokenu CSRF (fwrqpid)")
 
+        # Use the KatID emitted by the current login form.  The configured
+        # catalog ID may be stale after a SOWA migration (Kórnik now emits 0).
+        soup = BeautifulSoup(r.text, "html.parser")
+        kat_input = soup.find("input", {"name": "KatID"})
+        active_kat_id = kat_input.get("value", str(self.kat_id)) if kat_input else str(self.kat_id)
         data = {
-            "KatID": str(self.kat_id),
+            "KatID": active_kat_id,
             "swww_user": email,
             "swww_pass": password,
             "swww_stay": "Y",
@@ -160,6 +169,7 @@ class SowaOPAC:
             "fwrqpid": csrf,
         }
         r = self._post("index.php?typ=acc", data=data)
+        self._active_kat_id = active_kat_id
 
         # Sprawdź czy zalogowano: brak formularza logowania + brak error-msg
         soup = BeautifulSoup(r.text, "html.parser")
@@ -192,7 +202,9 @@ class SowaOPAC:
         """
         if not self.logged_in:
             raise RuntimeError("Nie jesteś zalogowany. Wywołaj login() najpierw.")
-        r = self._get(f"index.php?KatID={self.kat_id}&typ=acc&id={tab}")
+        # Account pages use the authenticated session's active KatID.  Passing
+        # the old configured KatID can redirect to a public catalog page.
+        r = self._get(f"index.php?typ=acc&id={tab}")
         return BeautifulSoup(r.text, "html.parser")
 
     @staticmethod
@@ -306,6 +318,13 @@ class SowaOPAC:
                 results.append((title, ok, msg))
         return results
 
+    def prolong_by_copy_id(self, copy_id: str) -> tuple[bool, str]:
+        """Prolong the loan identified by its copy number."""
+        for loan in self.get_loans():
+            if loan.copy_id == copy_id:
+                return self.prolong(loan)
+        return False, "Nie znaleziono wypożyczenia o podanym numerze egzemplarza"
+
     # -------------------------------------------------------------------------
     # Reservations
     # -------------------------------------------------------------------------
@@ -327,9 +346,101 @@ class SowaOPAC:
             info = record.find("div", class_="record-info-meta")
             if info:
                 res.status = info.get_text(separator=" ", strip=True)[:200]
+            form = record.find("form")
+            if form:
+                res._cancel_url = form.get("action", "")
+                for field_name in ("sn", "id"):
+                    field = form.find("input", {"name": field_name})
+                    if field and field.get("value"):
+                        res.reservation_id = field.get("value")
+                        break
+                res._cancel_data = {
+                    field.get("name"): field.get("value", "")
+                    for field in form.find_all("input")
+                    if field.get("name")
+                }
             reservations.append(res)
 
         return reservations
+
+    def reserve(self, idw: str, agenda: str, pickup: str, csrf_token: str) -> tuple[bool, str]:
+        """Place a reservation using values from a SOWA catalog result form."""
+        data = {
+            "id": "reserved",
+            "csrf_token": csrf_token,
+            "lendop": "order",
+            "idw": idw,
+            "agenda": agenda,
+            "pickups": pickup,
+        }
+        kat_id = getattr(self, "_active_kat_id", str(self.kat_id))
+        response = self._post(f"index.php?KatID={kat_id}&typ=acc", data=data)
+        return self._action_result(response.text, "Rezerwacja wykonana")
+
+    def search_catalog(self, query: str) -> list[dict]:
+        """Search public catalog and return reservation options for each hit."""
+        response = self.session.post(
+            self._full_url("index.php"),
+            data={"KatID": "0", "typ": "repl", "search_way": "ss", "ss_phrase": query},
+        )
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        results = []
+        for record in soup.find_all("div", class_="record-details"):
+            title_link = record.find("a", attrs={"data-001": True})
+            if not title_link:
+                continue
+            options = []
+            for form in record.find_all("form"):
+                values = {
+                    field.get("name"): field.get("value", "")
+                    for field in form.find_all("input")
+                    if field.get("name")
+                }
+                if values.get("lendop") in {"order", "book"} and values.get("idw"):
+                    options.append({
+                        "idw": values["idw"],
+                        "agenda": values.get("agenda", ""),
+                        "pickup": values.get("pickups", ""),
+                        "csrf_token": values.get("csrf_token", ""),
+                        "action": values.get("lendop"),
+                        "branch": re.split(
+                            r"Są egzemplarze|Wszystkie egzemplarze",
+                            form.get_text(" ", strip=True),
+                            maxsplit=1,
+                        )[0].strip(),
+                    })
+            results.append({
+                "record_id": title_link.get("data-001"),
+                "title": title_link.get_text(" ", strip=True),
+                "options": options,
+            })
+        return results
+
+    def cancel_reservation(self, reservation_id: str) -> tuple[bool, str]:
+        """Cancel a reservation by its SOWA reservation/copy identifier."""
+        reservation = next(
+            (item for item in self.get_reservations() if item.reservation_id == reservation_id),
+            None,
+        )
+        if reservation is None:
+            return False, "Nie znaleziono rezerwacji o podanym identyfikatorze"
+        data = dict(reservation._cancel_data)
+        data.update({"id": "reserved", "sv": "1", "orderop": "cancel", "sn": reservation_id})
+        kat_id = getattr(self, "_active_kat_id", str(self.kat_id))
+        url = reservation._cancel_url or f"index.php?KatID={kat_id}&typ=acc"
+        response = self._post(url, data=data)
+        return self._action_result(response.text, "Rezerwacja anulowana")
+
+    @staticmethod
+    def _action_result(html: str, default_success: str) -> tuple[bool, str]:
+        soup = BeautifulSoup(html, "html.parser")
+        msg_div = soup.find(class_=re.compile(r"message|info|success|error|alert", re.I))
+        if msg_div:
+            msg = msg_div.get_text(" ", strip=True)
+            failed = any(word in msg.lower() for word in ("błąd", "nie uda", "error"))
+            return not failed, msg
+        return True, default_success
 
     # -------------------------------------------------------------------------
     # History
@@ -465,8 +576,8 @@ class MultiAccountManager:
 # =============================================================================
 
 DEFAULT_CONFIG = {
-    "base_url": "https://www.kornik-bp.sowa.pl",
-    "kat_id": 519,
+    "base_url": "https://library.example.org",
+    "kat_id": 0,
     "accounts": {}
 }
 
@@ -501,12 +612,11 @@ Użycie:
 
 Konfiguracja: ~/.sowa.json
 {
-  "base_url": "https://www.kornik-bp.sowa.pl",
-  "kat_id": 519,
+  "base_url": "https://library.example.org",
+  "kat_id": 0,
   "accounts": {
-    "ja":     {"email": "wiktor@jarka.pl", "password": "..."},
-    "żona":   {"email": "...", "password": "..."},
-    "dziecko":{"email": "...", "password": "..."}
+    "account_a": {"email": "reader@example.org", "password": "password"},
+    "account_b": {"email": "other@example.org", "password": "password"}
   }
 }
 """)

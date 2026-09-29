@@ -1,0 +1,16 @@
+{
+  "base_url": "https://library.example.org",
+  "kat_id": 0,
+  "accounts": {
+    "account_a": {
+      "email": "reader@example.org",
+      "password": "CHANGE_ME",
+      "api_token": "GENERATE_A_LONG_RANDOM_TOKEN"
+    },
+    "account_b": {
+      "email": "other@example.org",
+      "password": "CHANGE_ME",
+      "api_token": "GENERATE_ANOTHER_LONG_RANDOM_TOKEN"
+    }
+  }
+}
