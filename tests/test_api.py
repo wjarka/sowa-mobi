@@ -27,6 +27,7 @@ class FakeReservation:
     expire_date: str = ""
     ready: bool = False
     pickup_by: str = ""
+    state: str = "preparing"
 
 
 class FakeClient:
@@ -104,7 +105,7 @@ class ApiTests(unittest.TestCase):
     def test_health_is_public(self):
         response = self.client.get("/healthz")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "ok")
+        self.assertEqual(response.json()["revision"], "0.4.0")
         self.assertIsInstance(response.json()["hint"], list)
 
     @patch.dict("os.environ", {"SOWA_REVISION": "abc123"})
@@ -189,6 +190,10 @@ class ApiTests(unittest.TestCase):
         self.assertIn("/v1/catalog/search", response.json()["paths"])
         schema = response.json()["components"]["schemas"]["HintedResponse"]
         self.assertIn("hint", schema["properties"])
+        self.assertIn("ReservationResponse", response.json()["components"]["schemas"])
+        reservation_schema = response.json()["components"]["schemas"]["ReservationResponse"]
+        self.assertEqual(reservation_schema["properties"]["state"]["enum"], ["queued", "preparing", "ready"])
+        self.assertIn("waiting for return", reservation_schema["properties"]["state"]["description"])
 
     def test_reservation_parser_extracts_structured_status_and_cancel_id(self):
         html = """
@@ -216,8 +221,10 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(items[0].reservation_id, "U105030")
         self.assertEqual(items[0].queue_pos, "1")
         self.assertFalse(items[0].ready)
+        self.assertEqual(items[0].state, "queued")
         self.assertEqual(items[1].reservation_id, "U104492")
         self.assertTrue(items[1].ready)
+        self.assertEqual(items[1].state, "ready")
         self.assertEqual(items[1].expire_date, "06.10.2026")
 
     def test_reservation_and_cancellation_are_exposed(self):
@@ -234,6 +241,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(listed["reservation_id"], "reservation-1")
         self.assertEqual(listed["queue_pos"], "2")
         self.assertFalse(listed["ready"])
+        self.assertEqual(listed["state"], "preparing")
 
         response = self.client.delete("/v1/reservations/reservation-1", headers=self.headers)
         self.assertEqual(response.status_code, 200)

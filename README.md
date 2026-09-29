@@ -205,6 +205,15 @@ może przełączyć się na inną bibliotekę. Jeśli konto ma własne `base_url
 `kat_id`, używana jest właśnie ta konfiguracja; w przeciwnym razie używane są
 wartości globalne.
 
+Rezerwacje zawierają stabilne pole `state`:
+
+- `queued` — pozycja czeka na zwrot; `queue_pos` jest wypełnione,
+- `preparing` — rezerwacja istnieje, ale nie jest jeszcze gotowa do odbioru,
+- `ready` — pozycja jest gotowa do odbioru; `ready` ma wartość `true`, a
+  `pickup_by` zawiera termin odbioru, jeśli biblioteka go publikuje.
+
+Surowe pole `status` pozostaje w odpowiedzi jako informacja diagnostyczna.
+
 Rezerwacja działa dwuetapowo. Najpierw agent wyszukuje książkę:
 
 ```bash

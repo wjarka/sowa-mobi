@@ -5,17 +5,18 @@ from __future__ import annotations
 import hmac
 import os
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from sowa_mobi.sowa_opac import SowaOPAC
 
 
 ClientFactory = Callable[[str], SowaOPAC]
+API_REVISION = "0.4.0"
 
 
 class HintedResponse(BaseModel):
@@ -23,6 +24,26 @@ class HintedResponse(BaseModel):
 
     hint: list[str]
     model_config = ConfigDict(extra="allow")
+
+
+class ReservationResponse(BaseModel):
+    """Stable public reservation representation."""
+
+    title: str = ""
+    status: str = ""
+    state: Literal["queued", "preparing", "ready"] = Field(
+        description="queued: waiting for return; preparing: item exists but is not ready for pickup; ready: available for pickup."
+    )
+    queue_pos: str = ""
+    expire_date: str = ""
+    reservation_id: str = ""
+    ready: bool = False
+    pickup_by: str = ""
+
+
+class ReservationsResponse(HintedResponse):
+    account: str
+    reservations: list[ReservationResponse]
 
 
 def with_hint(payload: dict[str, Any], *hints: str) -> dict[str, Any]:
@@ -133,7 +154,7 @@ def create_app(config: dict[str, Any], client_factory: ClientFactory | None = No
     @app.get("/healthz", response_model=HintedResponse, summary="Check API health", tags=["system"])
     def healthz() -> dict[str, Any]:
         return with_hint(
-            {"status": "ok", "revision": os.environ.get("SOWA_REVISION", "unknown")},
+            {"status": "ok", "revision": os.environ.get("SOWA_REVISION", API_REVISION)},
             "Use the documented endpoints to access library data.",
         )
 
@@ -181,7 +202,7 @@ def create_app(config: dict[str, Any], client_factory: ClientFactory | None = No
         ) else ["No current loan is marked as eligible for prolongation."]
         return with_hint({"account": account_name, "loans": loans_data}, *hints)
 
-    @app.get("/v1/reservations", response_model=HintedResponse, summary="List reservations", tags=["reservations"])
+    @app.get("/v1/reservations", response_model=ReservationsResponse, summary="List reservations", tags=["reservations"])
     def reservations(account_name: str = Depends(authenticated_account)) -> dict[str, Any]:
         client = get_client(account_name)
         try:
@@ -199,6 +220,7 @@ def create_app(config: dict[str, Any], client_factory: ClientFactory | None = No
                     "reservation_id": getattr(item, "reservation_id", ""),
                     "ready": bool(getattr(item, "ready", False)),
                     "pickup_by": getattr(item, "pickup_by", ""),
+                    "state": getattr(item, "state", "preparing"),
                 }
                 for item in items
             ],
