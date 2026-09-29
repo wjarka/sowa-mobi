@@ -67,6 +67,8 @@ class Reservation:
     queue_pos: str = ""
     expire_date: str = ""
     reservation_id: str = ""
+    ready: bool = False
+    pickup_by: str = ""
     _cancel_url: str = ""
     _cancel_data: dict = field(default_factory=dict)
 
@@ -79,6 +81,9 @@ class AccountInfo:
     email: str = ""
     phone: str = ""
     debt: str = ""
+    loans_count: Optional[int] = None
+    reservations_count: Optional[int] = None
+    loan_limit: Optional[int] = None
     address: str = ""
     birth_date: str = ""
 
@@ -346,14 +351,21 @@ class SowaOPAC:
             info = record.find("div", class_="record-info-meta")
             if info:
                 res.status = info.get_text(separator=" ", strip=True)[:200]
+                status_text = info.get_text(" ", strip=True)
+                queue = re.search(r"na\s+(\d+)\s+miejscu", status_text, re.I)
+                res.queue_pos = queue.group(1) if queue else ""
+                res.ready = bool(re.search(r"gotowa\s+do\s+odbioru", status_text, re.I))
+                pickup = re.search(r"termin\s+odbioru\s+do\s+(\d{2}\.\d{2}\.\d{4})", status_text, re.I)
+                res.pickup_by = pickup.group(1) if pickup else ""
+                res.expire_date = res.pickup_by
+            res.reservation_id = str(record.get("data-recid") or "")
             form = record.find("form")
             if form:
                 res._cancel_url = form.get("action", "")
                 for field_name in ("sn", "id"):
                     field = form.find("input", {"name": field_name})
-                    if field and field.get("value"):
+                    if field and field.get("value") and not res.reservation_id:
                         res.reservation_id = field.get("value")
-                        break
                 res._cancel_data = {
                     field.get("name"): field.get("value", "")
                     for field in form.find_all("input")
@@ -426,7 +438,7 @@ class SowaOPAC:
         if reservation is None:
             return False, "Nie znaleziono rezerwacji o podanym identyfikatorze"
         data = dict(reservation._cancel_data)
-        data.update({"id": "reserved", "sv": "1", "orderop": "cancel", "sn": reservation_id})
+        data.update({"id": "reserved", "sv": "1", "lendop": "cancel-order"})
         kat_id = getattr(self, "_active_kat_id", str(self.kat_id))
         url = reservation._cancel_url or f"index.php?KatID={kat_id}&typ=acc"
         response = self._post(url, data=data)
@@ -491,11 +503,20 @@ class SowaOPAC:
             info.email = email_match.group(0)
 
         # Saldo / zadłużenie
-        debt_div = soup.find(class_=re.compile(r"acc-info-summary", re.I))
-        if debt_div:
-            info.debt = debt_div.get_text(strip=True)
+        summary = soup.find(class_=re.compile(r"acc-info-summary", re.I))
+        summary_text = summary.get_text(" ", strip=True) if summary else ""
+        if summary_text:
+            info.debt = summary_text
+        count_text = text
+        loan_count = re.search(r"Wypożyczone:\s*(\d+)", count_text, re.I)
+        reservation_count = re.search(r"Oczekujące:\s*(\d+)", count_text, re.I)
+        if loan_count:
+            info.loans_count = int(loan_count.group(1))
+        if reservation_count:
+            info.reservations_count = int(reservation_count.group(1))
 
-        # Data urodzenia (DD.MM.YYYY lub YYYY-MM-DD)
+        # SOWA does not expose a borrowing limit on all installations. Keep it
+        # null rather than guessing a limit from the current loan count.
         birth_match = re.search(r'(\d{4}-\d{2}-\d{2})', text)
         if birth_match:
             info.birth_date = birth_match.group(1)
@@ -507,6 +528,18 @@ class SowaOPAC:
 
         self._info = info
         return info
+
+    def get_billing_summary(self) -> dict:
+        """Return the published balance and billing operation count."""
+        info = self.get_account_info()
+        soup = self._fetch_tab("billing")
+        text = soup.get_text(" ", strip=True)
+        operations = re.search(r"Ilość operacji:\s*(\d+)", text, re.I)
+        return {
+            "balance": info.debt,
+            "operations_count": int(operations.group(1)) if operations else None,
+            "fees": [],
+        }
 
 
 # =============================================================================

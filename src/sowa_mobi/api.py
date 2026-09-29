@@ -135,8 +135,35 @@ def create_app(config: dict[str, Any], client_factory: ClientFactory | None = No
         return with_hint({"status": "ok"}, "Use the documented endpoints to access library data.")
 
     @app.get("/v1/account", response_model=HintedResponse, summary="Get the authenticated account", tags=["account"])
-    def account(account_name: str = Depends(authenticated_account)) -> dict[str, str]:
-        return with_hint({"account": account_name}, "Use this account context for the returned library data.")
+    def account(account_name: str = Depends(authenticated_account)) -> dict[str, Any]:
+        client = get_client(account_name)
+        try:
+            info = client.get_account_info()
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail="SOWA account request failed") from exc
+        return with_hint(
+            {
+                "account": account_name,
+                "name": getattr(info, "name", ""),
+                "debt": getattr(info, "debt", ""),
+                "loans_count": getattr(info, "loans_count", None),
+                "reservations_count": getattr(info, "reservations_count", None),
+                "loan_limit": getattr(info, "loan_limit", None),
+            },
+            "Use loans_count and loan_limit to assess borrowing capacity; null means the library did not publish the limit.",
+        )
+
+    @app.get("/v1/account/billing", response_model=HintedResponse, summary="Get account balance and billing", tags=["account"])
+    def billing(account_name: str = Depends(authenticated_account)) -> dict[str, Any]:
+        client = get_client(account_name)
+        try:
+            summary = client.get_billing_summary()
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail="SOWA billing request failed") from exc
+        return with_hint(
+            {"account": account_name, **summary},
+            "Use the balance and billing operations to explain account charges; an empty operations list means no charges were published.",
+        )
 
     @app.get("/v1/loans", response_model=HintedResponse, summary="List current loans", tags=["loans"])
     def loans(account_name: str = Depends(authenticated_account)) -> dict[str, Any]:
@@ -167,6 +194,8 @@ def create_app(config: dict[str, Any], client_factory: ClientFactory | None = No
                     "queue_pos": getattr(item, "queue_pos", ""),
                     "expire_date": getattr(item, "expire_date", ""),
                     "reservation_id": getattr(item, "reservation_id", ""),
+                    "ready": bool(getattr(item, "ready", False)),
+                    "pickup_by": getattr(item, "pickup_by", ""),
                 }
                 for item in items
             ],

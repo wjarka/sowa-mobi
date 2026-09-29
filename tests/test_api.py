@@ -2,9 +2,11 @@ import unittest
 from dataclasses import dataclass
 from unittest.mock import patch
 
+from bs4 import BeautifulSoup
 from fastapi.testclient import TestClient
 
 from sowa_mobi.api import create_app
+from sowa_mobi.sowa_opac import SowaOPAC
 
 
 @dataclass
@@ -21,6 +23,10 @@ class FakeReservation:
     title: str
     status: str = "oczekuje"
     reservation_id: str = "reservation-1"
+    queue_pos: str = "2"
+    expire_date: str = ""
+    ready: bool = False
+    pickup_by: str = ""
 
 
 class FakeClient:
@@ -38,7 +44,17 @@ class FakeClient:
         return [FakeReservation("Rezerwacja testowa")]
 
     def get_account_info(self):
-        return type("Info", (), {"name": self.account, "email": "", "debt": "0,00 PLN"})()
+        return type("Info", (), {
+            "name": self.account,
+            "email": "",
+            "debt": "Saldo konta: 0,00 PLN",
+            "loans_count": 1,
+            "reservations_count": 2,
+            "loan_limit": None,
+        })()
+
+    def get_billing_summary(self):
+        return {"balance": "Saldo konta: 0,00 PLN", "operations_count": 0, "fees": []}
 
     def prolong_by_copy_id(self, copy_id):
         self.prolonged.append(copy_id)
@@ -133,8 +149,17 @@ class ApiTests(unittest.TestCase):
         response = self.client.get("/v1/account", headers=self.headers)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["account"], "wiktor")
+        self.assertEqual(response.json()["loans_count"], 1)
+        self.assertEqual(response.json()["reservations_count"], 2)
+        self.assertIsNone(response.json()["loan_limit"])
         self.assertNotIn("password", response.text)
         self.assertNotIn("email", response.json())
+
+    def test_billing_endpoint_exposes_balance_and_operations(self):
+        response = self.client.get("/v1/account/billing", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["balance"], "Saldo konta: 0,00 PLN")
+        self.assertEqual(response.json()["operations_count"], 0)
 
     def test_prolongation_is_exposed_for_a_specific_copy(self):
         response = self.client.post("/v1/loans/copy-1/prolong", headers=self.headers)
@@ -159,6 +184,36 @@ class ApiTests(unittest.TestCase):
         schema = response.json()["components"]["schemas"]["HintedResponse"]
         self.assertIn("hint", schema["properties"])
 
+    def test_reservation_parser_extracts_structured_status_and_cancel_id(self):
+        html = """
+        <div id="results-panel">
+          <div class="record-details" data-recid="U105030">
+            <div class="record-meta">Test title</div>
+            <div class="record-info-meta">Jesteś na 1 miejscu w kolejce oczekujących na zwrot pozycji.</div>
+            <form action="index.php?KatID=0&amp;typ=acc&amp;id=reserved" method="post">
+              <input name="csrf_token" value="csrf-value">
+              <input name="lendop" value="cancel-order">
+              <input name="idw" value="U105030">
+              <input name="agenda" value="03">
+            </form>
+          </div>
+          <div class="record-details" data-recid="U104492">
+            <div class="record-meta">Ready title</div>
+            <div class="record-info-meta">Pozycja jest gotowa DO ODBIORU! Termin odbioru do 06.10.2026.</div>
+          </div>
+        </div>
+        """
+        client = SowaOPAC("https://example.invalid", 0)
+        client.logged_in = True
+        client._fetch_tab = lambda tab: BeautifulSoup(html, "html.parser")
+        items = client.get_reservations()
+        self.assertEqual(items[0].reservation_id, "U105030")
+        self.assertEqual(items[0].queue_pos, "1")
+        self.assertFalse(items[0].ready)
+        self.assertEqual(items[1].reservation_id, "U104492")
+        self.assertTrue(items[1].ready)
+        self.assertEqual(items[1].expire_date, "06.10.2026")
+
     def test_reservation_and_cancellation_are_exposed(self):
         self.client.get("/v1/catalog/search?q=argumentacja", headers=self.headers)
         response = self.client.post(
@@ -168,6 +223,11 @@ class ApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.clients["wiktor"].reserved, [("U123", "03", "03")])
+
+        listed = self.client.get("/v1/reservations", headers=self.headers).json()["reservations"][0]
+        self.assertEqual(listed["reservation_id"], "reservation-1")
+        self.assertEqual(listed["queue_pos"], "2")
+        self.assertFalse(listed["ready"])
 
         response = self.client.delete("/v1/reservations/reservation-1", headers=self.headers)
         self.assertEqual(response.status_code, 200)
