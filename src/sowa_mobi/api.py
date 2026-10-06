@@ -288,7 +288,7 @@ def create_app(config: dict[str, Any], client_factory: ClientFactory | None = No
         client = get_client(account_name)
         try:
             success, message = client.reserve(
-                option["idw"], option["agenda"], option["pickup"], option["csrf_token"]
+                option["idw"], option["agenda"], option["pickup"], option["csrf_token"], option.get("action", "order")
             )
         except Exception as exc:
             raise HTTPException(status_code=502, detail="SOWA reservation request failed") from exc

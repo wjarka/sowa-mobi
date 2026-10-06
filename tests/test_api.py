@@ -61,8 +61,8 @@ class FakeClient:
         self.prolonged.append(copy_id)
         return True, "Prolongata wykonana"
 
-    def reserve(self, idw, agenda, pickup, csrf_token):
-        self.reserved.append((idw, agenda, pickup))
+    def reserve(self, idw, agenda, pickup, csrf_token, action="order"):
+        self.reserved.append((idw, agenda, pickup, action))
         return True, "Rezerwacja wykonana"
 
     def cancel_reservation(self, reservation_id):
@@ -78,7 +78,7 @@ class FakeClient:
                 "agenda": "03",
                 "pickup": "03",
                 "csrf_token": "csrf-internal",
-                "action": "order",
+                "action": "book",
             }],
         }]
 
@@ -227,6 +227,13 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(items[1].state, "ready")
         self.assertEqual(items[1].expire_date, "06.10.2026")
 
+    def test_action_result_never_reports_known_sowa_errors_as_success(self):
+        for message in ("Niepoprawny token zabezpieczający", "Ta operacja jest nieznana"):
+            html = f'<div class="message">{message}</div>'
+            success, returned = SowaOPAC._action_result(html, "OK")
+            self.assertFalse(success)
+            self.assertEqual(returned, message)
+
     def test_reservation_and_cancellation_are_exposed(self):
         self.client.get("/v1/catalog/search?q=argumentacja", headers=self.headers)
         response = self.client.post(
@@ -235,7 +242,7 @@ class ApiTests(unittest.TestCase):
             json={"option_id": "R1:0"},
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(self.clients["wiktor"].reserved, [("U123", "03", "03")])
+        self.assertEqual(self.clients["wiktor"].reserved, [("U123", "03", "03", "book")])
 
         listed = self.client.get("/v1/reservations", headers=self.headers).json()["reservations"][0]
         self.assertEqual(listed["reservation_id"], "reservation-1")

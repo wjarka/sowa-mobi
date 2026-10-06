@@ -377,12 +377,12 @@ class SowaOPAC:
 
         return reservations
 
-    def reserve(self, idw: str, agenda: str, pickup: str, csrf_token: str) -> tuple[bool, str]:
+    def reserve(self, idw: str, agenda: str, pickup: str, csrf_token: str, action: str = "order") -> tuple[bool, str]:
         """Place a reservation using values from a SOWA catalog result form."""
         data = {
             "id": "reserved",
             "csrf_token": csrf_token,
-            "lendop": "order",
+            "lendop": action,
             "idw": idw,
             "agenda": agenda,
             "pickups": pickup,
@@ -440,7 +440,8 @@ class SowaOPAC:
         if reservation is None:
             return False, "Nie znaleziono rezerwacji o podanym identyfikatorze"
         data = dict(reservation._cancel_data)
-        data.update({"id": "reserved", "sv": "1", "lendop": "cancel-order"})
+        if not data.get("lendop"):
+            data["lendop"] = "cancel-order"
         kat_id = getattr(self, "_active_kat_id", str(self.kat_id))
         url = reservation._cancel_url or f"index.php?KatID={kat_id}&typ=acc"
         response = self._post(url, data=data)
@@ -452,7 +453,16 @@ class SowaOPAC:
         msg_div = soup.find(class_=re.compile(r"message|info|success|error|alert", re.I))
         if msg_div:
             msg = msg_div.get_text(" ", strip=True)
-            failed = any(word in msg.lower() for word in ("błąd", "nie uda", "error"))
+            failed = any(word in msg.lower() for word in (
+                "błąd",
+                "nie uda",
+                "error",
+                "niepoprawny",
+                "nieznana",
+                "unknown",
+                "invalid",
+                "zabezpieczający",
+            ))
             return not failed, msg
         return True, default_success
 
