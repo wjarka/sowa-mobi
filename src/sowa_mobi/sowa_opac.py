@@ -93,6 +93,10 @@ class AccountInfo:
 # Main client
 # =============================================================================
 
+class SowaSessionExpired(RuntimeError):
+    """The library returned its login form instead of an authenticated page."""
+
+
 class SowaOPAC:
     """
     Klient web OPAC dla systemu SOWA (Sokrates-software).
@@ -211,7 +215,12 @@ class SowaOPAC:
         # Account pages use the authenticated session's active KatID.  Passing
         # the old configured KatID can redirect to a public catalog page.
         r = self._get(f"index.php?typ=acc&id={tab}")
-        return BeautifulSoup(r.text, "html.parser")
+        soup = BeautifulSoup(r.text, "html.parser")
+        if soup.find("form", {"name": "log"}):
+            self.logged_in = False
+            self._info = None
+            raise SowaSessionExpired("SOWA session expired")
+        return soup
 
     @staticmethod
     def _parse_date(text: str, prefix: str) -> str:

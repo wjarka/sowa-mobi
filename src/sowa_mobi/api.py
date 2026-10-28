@@ -12,7 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from sowa_mobi.sowa_opac import SowaOPAC
+from sowa_mobi.sowa_opac import SowaOPAC, SowaSessionExpired
 
 
 ClientFactory = Callable[[str], SowaOPAC]
@@ -140,6 +140,14 @@ def create_app(config: dict[str, Any], client_factory: ClientFactory | None = No
                 raise HTTPException(status_code=502, detail="SOWA login failed") from exc
         return client
 
+    def read_account(account_name: str, operation: str) -> Any:
+        client = get_client(account_name)
+        try:
+            return getattr(client, operation)()
+        except SowaSessionExpired:
+            client = get_client(account_name)
+            return getattr(client, operation)()
+
     def loan_json(loan: Any) -> dict[str, Any]:
         return {
             "title": getattr(loan, "short_title", "") or getattr(loan, "title", ""),
@@ -160,9 +168,8 @@ def create_app(config: dict[str, Any], client_factory: ClientFactory | None = No
 
     @app.get("/v1/account", response_model=HintedResponse, summary="Get the authenticated account", tags=["account"])
     def account(account_name: str = Depends(authenticated_account)) -> dict[str, Any]:
-        client = get_client(account_name)
         try:
-            info = client.get_account_info()
+            info = read_account(account_name, "get_account_info")
         except Exception as exc:
             raise HTTPException(status_code=502, detail="SOWA account request failed") from exc
         return with_hint(
@@ -179,9 +186,8 @@ def create_app(config: dict[str, Any], client_factory: ClientFactory | None = No
 
     @app.get("/v1/account/billing", response_model=HintedResponse, summary="Get account balance and billing", tags=["account"])
     def billing(account_name: str = Depends(authenticated_account)) -> dict[str, Any]:
-        client = get_client(account_name)
         try:
-            summary = client.get_billing_summary()
+            summary = read_account(account_name, "get_billing_summary")
         except Exception as exc:
             raise HTTPException(status_code=502, detail="SOWA billing request failed") from exc
         return with_hint(
@@ -191,9 +197,8 @@ def create_app(config: dict[str, Any], client_factory: ClientFactory | None = No
 
     @app.get("/v1/loans", response_model=HintedResponse, summary="List current loans", tags=["loans"])
     def loans(account_name: str = Depends(authenticated_account)) -> dict[str, Any]:
-        client = get_client(account_name)
         try:
-            items = client.get_loans()
+            items = read_account(account_name, "get_loans")
         except Exception as exc:
             raise HTTPException(status_code=502, detail="SOWA loans request failed") from exc
         loans_data = [loan_json(item) for item in items]
@@ -204,9 +209,8 @@ def create_app(config: dict[str, Any], client_factory: ClientFactory | None = No
 
     @app.get("/v1/reservations", response_model=ReservationsResponse, summary="List reservations", tags=["reservations"])
     def reservations(account_name: str = Depends(authenticated_account)) -> dict[str, Any]:
-        client = get_client(account_name)
         try:
-            items = client.get_reservations()
+            items = read_account(account_name, "get_reservations")
         except Exception as exc:
             raise HTTPException(status_code=502, detail="SOWA reservations request failed") from exc
         payload = {
